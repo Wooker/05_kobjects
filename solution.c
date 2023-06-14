@@ -1,13 +1,11 @@
-#include <linux/kernel.h>
-#include <linux/kobject.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/string.h>
-#include <linux/sysfs.h>
+#include <linux/kernel.h>
+#include <linux/uaccess.h>
 #include <linux/fs.h>
 
-#define KBUF_SIZE (size_t) ((10) * PAGE_SIZE)
- 
+#define DEVICE_NAME "solution_node"
+#define SOLUTION_MAJOR 217
+
 static int a = 0;
 module_param(a,int,0);
 MODULE_PARM_DESC(a, "First integer");
@@ -22,10 +20,10 @@ module_param_array(c, int, &arr_argc, 0);
 MODULE_PARM_DESC(myintArray, "An array of integers");
 
 static int sum = 0;
- 
+
 static ssize_t my_sys_show(struct kobject* kobj, struct kobj_attribute* attr, char* buf)
 {
-  buf[0] = '\0';
+  printk(KERN_INFO "Reading sum %d", sum);
   return sprintf(buf, "%d\n", sum);
 }
  
@@ -37,69 +35,100 @@ static ssize_t my_sys_store(struct kobject* kobj, struct kobj_attribute* attr, c
 static struct kobject* my_kobject;
 static struct kobj_attribute my_sys_attribute = __ATTR(my_sys, 0664, my_sys_show, my_sys_store);
 
-static int drv_open(struct inode *inode, struct file *file) {
-  char *kbuf = kmalloc(KBUF_SIZE, GFP_KERNEL);
-  file->private_data = kbuf;
+static ssize_t solution_read(struct file *filp, char __user *buf, size_t count, loff_t *offset)
+{
+  int result; 
+  char sum_string[15]; // Allocate a buffer to hold the sum as a string
+  int len = snprintf(sum_string, sizeof(sum_string), "%d\n", sum); // Convert sum to string
 
-  return 0;
+  if (*offset >= len)
+      return 0; // End of file
+
+
+  result = copy_to_user(buf, sum_string, len); 
+  if ( result != 0)
+    return -EFAULT; // Failed to copy sum to user space
+
+  *offset += len;
+  return len;
 }
 
-static int drv_read(struct file *file, char __user *buf, size_t lbuf, loff_t *ppos) {
-  char *kbuf = file->private_data;
+static ssize_t solution_write(struct file *filp, const char __user *buf, size_t count, loff_t *offset)
+{
+    int result;
+    char input_buffer[24]; // Allocate a buffer to store the user input
 
-  int nbytes = lbuf - (int)copy_to_user(buf, kbuf + *ppos, lbuf);
-  *ppos += nbytes;
+    result = copy_from_user(input_buffer, buf, count); 
 
-  return nbytes;
+    if ( result != 0)
+        return -EFAULT; // Failed to copy from user space
+
+    if (sscanf(input_buffer, "%d %d", &a, &b) != 2)
+        return -EINVAL; // Invalid input format
+
+  int i;
+  for (i = 0; i < 5; i++) {
+    if (sscanf(input_buffer, "%d", &c[i]) != 1)
+        return -EINVAL; // Invalid input format
+    
+  }
+
+    return count;
 }
 
-static ssize_t drv_write(struct file *file, const char __user *buf, size_t lbuf, loff_t *ppos) {
-  char *kbuf = file->private_data;
-
-  int nbytes = (int)copy_from_user(kbuf + *ppos, buf, lbuf);
-  *ppos += nbytes;
-
-  printk(KERN_INFO "wrote %d bytes, %d ppos", nbytes, (int)*ppos);
-
-  return nbytes;
-}
- 
-static const struct file_operations my_fops = {
-  .owner = THIS_MODULE,
-  .open = drv_open,
-  .write = drv_write,
+// Register operations
+static struct file_operations solution_fops = {
+    .owner = THIS_MODULE,
+    .read = solution_read,
+    .write = solution_write,
 };
 
-static int __init custom_init(void)
+static int __init solution_init(void)
 {
-  int retval = 0;
-  printk(KERN_INFO "kernel_mooc Module initialize");
-  
-  my_kobject = kobject_create_and_add("my_kobject", kernel_kobj);
-  if (!my_kobject)
-  {
-    printk(KERN_ERR "kernel_mooc error kobject_create_and_add");
-    return 1;
-  }
+    int result, i;
+    sum += a + b;
+    for (i = 0; i < 5; i++) {
+      printk(KERN_INFO "Adding to sum %d", c[i]);
+      sum += c[i];
+    }
+
+    // Register the character device driver
+    result = register_chrdev(SOLUTION_MAJOR, DEVICE_NAME, &solution_fops);
+    if (result < 0) {
+        printk(KERN_ALERT "Failed to register solution module %d\n", result);
+        return result;
+    }
+
+    my_kobject = kobject_create_and_add("my_kobject", kernel_kobj);
+    if (!my_kobject)
+    {
+      printk(KERN_ERR "kernel_mooc error kobject_create_and_add");
+      return 1;
+    }
  
-  retval = sysfs_create_file(my_kobject, &my_sys_attribute.attr);
-  if (retval)
-  {
-    printk(KERN_ERR "kernel_mooc error sysfs_create_file");
-    kobject_put(my_kobject);
-    return 1;
-  }
-  
-  return 0;
+    result = sysfs_create_file(my_kobject, &my_sys_attribute.attr);
+    if (result )
+    {
+      printk(KERN_ERR "kernel_mooc error sysfs_create_file");
+      kobject_put(my_kobject);
+      return 1;
+    }
+
+    printk(KERN_INFO "Solution module is loaded\n");
+    return 0;
 }
- 
-static void __exit custom_exit(void)
+
+static void __exit solution_exit(void)
 {
-  printk(KERN_INFO "kernel_mooc Module deinitialize");
-  kobject_put(my_kobject);
+    // Unregister the character device driver
+    unregister_chrdev(SOLUTION_MAJOR, DEVICE_NAME);
+
+    printk(KERN_INFO "Solution module is unloaded\n");
 }
- 
-module_init(custom_init);
-module_exit(custom_exit);
- 
+
+module_init(solution_init);
+module_exit(solution_exit);
+
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Zakhar Semenov");
+MODULE_DESCRIPTION("Solution");
